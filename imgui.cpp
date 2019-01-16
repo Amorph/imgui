@@ -1,4 +1,4 @@
-// dear imgui, v1.67 WIP
+// dear imgui, v1.68 WIP
 // (main code and documentation)
 
 // Call and read ImGui::ShowDemoWindow() in imgui_demo.cpp for demo code.
@@ -45,6 +45,7 @@ DOCUMENTATION
   - How can I easily use icons in my application?
   - How can I load multiple fonts?
   - How can I display and input non-latin characters such as Chinese, Japanese, Korean, Cyrillic?
+  - How can I interact with standard C++ types (such as std::string and std::vector)? 
   - How can I use the drawing facilities without an ImGui window? (using ImDrawList API)
   - How can I use Dear ImGui on a platform that doesn't have a mouse or a keyboard? (input share, remoting, gamepad)
   - I integrated Dear ImGui in my engine and the text or lines are blurry..
@@ -365,6 +366,7 @@ CODE
 
  - 2019/01/06 (1.67) - renamed io.InputCharacters[], marked internal as was always intended. Please don't access directly, and use AddInputCharacter() instead!
  - 2019/01/06 (1.67) - renamed ImFontAtlas::GlyphRangesBuilder to ImFontGlyphRangesBuilder. Keep redirection typedef (will obsolete).
+ - 2018/12/20 (1.67) - made it illegal to call Begin("") with an empty string. This somehow half-worked before but had various undesirable side-effects.
  - 2018/12/10 (1.67) - renamed io.ConfigResizeWindowsFromEdges to io.ConfigWindowsResizeFromEdges as we are doing a large pass on configuration flags.
  - 2018/10/12 (1.66) - renamed misc/stl/imgui_stl.* to misc/cpp/imgui_stdlib.* in prevision for other C++ helper files.
  - 2018/09/28 (1.66) - renamed SetScrollHere() to SetScrollHereY(). Kept redirection function (will obsolete).
@@ -843,6 +845,28 @@ CODE
     Windows: if your language is relying on an Input Method Editor (IME), you copy the HWND of your window to io.ImeWindowHandle in order for 
     the default implementation of io.ImeSetInputScreenPosFn() to set your Microsoft IME position correctly.
 
+ Q: How can I interact with standard C++ types (such as std::string and std::vector)? 
+ A: - Being highly portable (bindings for several languages, frameworks, programming style, obscure or older platforms/compilers),
+      and aiming for compatibility & performance suitable for every modern real-time game engines, dear imgui does not use
+      any of std C++ types. We use raw types (e.g. char* instead of std::string) because they adapt to more use cases.
+    - To use ImGui::InputText() with a std::string or any resizable string class, see misc/cpp/imgui_stdlib.h.
+    - To use combo boxes and list boxes with std::vector or any other data structure: the BeginCombo()/EndCombo() API
+      lets you iterate and submit items yourself, so does the ListBoxHeader()/ListBoxFooter() API.
+      Prefer using them over the old and awkward Combo()/ListBox() api.
+    - Generally for most high-level types you should be able to access the underlying data type. 
+      You may write your own one-liner wrappers to facilitate user code (tip: add new functions in ImGui:: namespace from your code).
+    - Dear ImGui applications often need to make intensive use of strings. It is expected that many of the strings you will pass
+      to the API are raw literals (free in C/C++) or allocated in a manner that won't incur a large cost on your application.
+      Please bear in mind that using std::string on applications with large amount of UI may incur unsatisfactory performances.
+      Modern implementations of std::string often include small-string optimization (which is often a local buffer) but those 
+      are not configurable and not the same across implementations. 
+    - If you are finding your UI traversal cost to be too large, make sure your string usage is not leading to excessive amount 
+      of heap allocations. Consider using literals, statically sized buffers and your own helper functions. A common pattern
+      is that you will need to build lots of strings on the fly, and their maximum length can be easily be scoped ahead. 
+      One possible implementation of a helper to facilitate printf-style building of strings: https://github.com/ocornut/Str
+      This is a small helper where you can instance strings with configurable local buffers length. Many game engines will 
+      provide similar or better string helpers.
+
  Q: How can I use the drawing facilities without an ImGui window? (using ImDrawList API)
  A: - You can create a dummy window. Call Begin() with the NoBackground | NoDecoration | NoSavedSettings | NoInputs flags.
       (The ImGuiWindowFlags_NoDecoration flag itself is a shortcut for NoTitleBar | NoResize | NoScrollbar | NoCollapse)
@@ -932,7 +956,11 @@ CODE
 #pragma clang diagnostic ignored "-Wglobal-constructors"    // warning : declaration requires a global destructor           // similar to above, not sure what the exact difference it.
 #pragma clang diagnostic ignored "-Wsign-conversion"        // warning : implicit conversion changes signedness             //
 #pragma clang diagnostic ignored "-Wformat-pedantic"        // warning : format specifies type 'void *' but the argument has type 'xxxx *' // unreasonable, would lead to casting every %p arg to void*. probably enabled by -pedantic.
-#pragma clang diagnostic ignored "-Wint-to-void-pointer-cast" // warning : cast to 'void *' from smaller integer type 'int'
+#pragma clang diagnostic ignored "-Wint-to-void-pointer-cast"       // warning : cast to 'void *' from smaller integer type 'int'
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"  // warning : zero as null pointer constant              // some standard header variations use #define NULL 0
+#if __has_warning("-Wdouble-promotion")
+#pragma clang diagnostic ignored "-Wdouble-promotion"       // warning: implicit conversion from 'float' to 'double' when passing argument to function  // using printf() is a misery with this as C++ va_arg ellipsis changes float to double.
+#endif
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-function"          // warning: 'xxxx' defined but not used
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"      // warning: cast to pointer from integer of different size
@@ -2923,7 +2951,7 @@ bool ImGui::DebugCheckVersionAndDataLayout(const char* version, size_t sz_io, si
     return !error;
 }
 
-void ImGui::SetAllocatorFunctions(void* (*alloc_func)(size_t sz, void* user_data), void(*free_func)(void* ptr, void* user_data), void* user_data)
+void ImGui::SetAllocatorFunctions(void* (*alloc_func)(size_t sz, void* user_data), void (*free_func)(void* ptr, void* user_data), void* user_data)
 {
     GImAllocatorAllocFunc = alloc_func;
     GImAllocatorFreeFunc = free_func;
@@ -4248,7 +4276,8 @@ static bool ImGui::BeginChildEx(const char* name, ImGuiID id, const ImVec2& size
 
     // Set the cursor to handle case where the user called SetNextWindowPos()+BeginChild() manually.
     // While this is not really documented/defined, it seems that the expected thing to do.
-    parent_window->DC.CursorPos = child_window->Pos;
+    if (child_window->BeginCount == 1)
+        parent_window->DC.CursorPos = child_window->Pos;
 
     // Process navigation-in immediately so NavInit can run on first frame
     if (g.NavActivateId == id && !(flags & ImGuiWindowFlags_NavFlattened) && (child_window->DC.NavLayerActiveMask != 0 || child_window->DC.NavHasScroll))
@@ -4384,7 +4413,7 @@ static ImGuiWindow* CreateNewWindow(const char* name, ImVec2 size, ImGuiWindowFl
         if (ImGuiWindowSettings* settings = ImGui::FindWindowSettings(window->ID))
         {
             // Retrieve settings from .ini file
-            window->SettingsIdx = g.SettingsWindows.index_from_pointer(settings);
+            window->SettingsIdx = g.SettingsWindows.index_from_ptr(settings);
             SetWindowConditionAllowFlags(window, ImGuiCond_FirstUseEver, false);
             window->Pos = ImFloor(settings->Pos);
             window->Collapsed = settings->Collapsed;
@@ -5086,7 +5115,7 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
             // Title bar
             if (!(flags & ImGuiWindowFlags_NoTitleBar))
             {
-                ImU32 title_bar_col = GetColorU32(window->Collapsed ? ImGuiCol_TitleBgCollapsed : title_bar_is_highlight ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg);
+                ImU32 title_bar_col = GetColorU32(title_bar_is_highlight ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg);
                 window->DrawList->AddRectFilled(title_bar_rect.Min, title_bar_rect.Max, title_bar_col, window_rounding, ImDrawCornerFlags_Top);
             }
 
@@ -7485,6 +7514,7 @@ static void ImGui::NavUpdate()
     NavUpdateWindowing();
 
     // Set output flags for user application
+    // FIXME: g.NavInitRequest is always false at this point, investigate the intent of operation done here.
     g.IO.NavActive = (nav_keyboard_active || nav_gamepad_active) && g.NavWindow && !(g.NavWindow->Flags & ImGuiWindowFlags_NoNavInputs);
     g.IO.NavVisible = (g.IO.NavActive && g.NavId != 0 && !g.NavDisableHighlight) || (g.NavWindowingTarget != NULL) || g.NavInitRequest;
 
@@ -7720,7 +7750,7 @@ static float ImGui::NavUpdatePageUpPageDown(int allowed_dir_flags)
         ImGuiWindow* window = g.NavWindow;
         bool page_up_held = IsKeyDown(g.IO.KeyMap[ImGuiKey_PageUp]) && (allowed_dir_flags & (1 << ImGuiDir_Up));
         bool page_down_held = IsKeyDown(g.IO.KeyMap[ImGuiKey_PageDown]) && (allowed_dir_flags & (1 << ImGuiDir_Down));
-        if ((page_up_held && !page_down_held) || (page_down_held && !page_up_held))
+        if (page_up_held != page_down_held) // If either (not both) are pressed
         {
             if (window->DC.NavLayerActiveMask == 0x00 && window->DC.NavHasScroll)
             {
@@ -8389,7 +8419,7 @@ bool ImGui::BeginDragDropSource(ImGuiDragDropFlags flags)
             // Target can request the Source to not display its tooltip (we use a dedicated flag to make this request explicit)
             // We unfortunately can't just modify the source flags and skip the call to BeginTooltip, as caller may be emitting contents. 
             BeginTooltip();
-            if (g.DragDropActive && g.DragDropAcceptIdPrev && (g.DragDropAcceptFlags & ImGuiDragDropFlags_AcceptNoPreviewTooltip))
+            if (g.DragDropAcceptIdPrev && (g.DragDropAcceptFlags & ImGuiDragDropFlags_AcceptNoPreviewTooltip))
             {
                 ImGuiWindow* tooltip_window = g.CurrentWindow;
                 tooltip_window->SkipItems = true;
@@ -8940,7 +8970,7 @@ static void SettingsHandlerWindow_WriteAll(ImGuiContext* imgui_ctx, ImGuiSetting
         if (!settings)
         {
             settings = ImGui::CreateNewWindowSettings(window->Name);
-            window->SettingsIdx = g.SettingsWindows.index_from_pointer(settings);
+            window->SettingsIdx = g.SettingsWindows.index_from_ptr(settings);
         }
         IM_ASSERT(settings->ID == window->ID);
         settings->Pos = window->Pos;
