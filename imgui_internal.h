@@ -813,6 +813,11 @@ struct ImGuiTabBarSortItem
     float       Width;
 };
 
+enum ImGuiDockNodeFlagsPrivate_
+{
+    ImGuiDockNodeFlags_Dockspace  = 1 << 10
+};
+
 // sizeof() 116~160
 struct ImGuiDockNode
 {
@@ -829,20 +834,19 @@ struct ImGuiDockNode
     ImGuiWindowClass        WindowClass;
 
     ImGuiWindow*            HostWindow;
-    ImGuiWindow*            VisibleWindow;
+    ImGuiWindow*            VisibleWindow;              // Generally point to window which is ID is == SelectedTabID, but when CTRL+Tabbing this can be a different window.
     ImGuiDockNode*          CentralNode;                // [Root node only] Pointer to central node.
     ImGuiDockNode*          OnlyNodeWithWindows;        // [Root node only] Set when there is a single visible node within the hierarchy.
     int                     LastFrameAlive;             // Last frame number the node was updated or kept alive explicitly with DockSpace() + ImGuiDockNodeFlags_KeepAliveOnly
     int                     LastFrameActive;            // Last frame number the node was updated.
     int                     LastFrameFocused;           // Last frame number the node was focused.
-    ImGuiID                 LastFocusedNodeID;          // [Root node only] Which of our child node (any ancestor in the hierarchy) was last focused.
+    ImGuiID                 LastFocusedNodeID;          // [Root node only] Which of our child docking node (any ancestor in the hierarchy) was last focused.
     ImGuiID                 SelectedTabID;              // [Tab node only] Which of our tab is selected.
     ImGuiID                 WantCloseTabID;             // [Tab node only] Set when closing a specific tab.
     bool                    InitFromFirstWindowPosSize  :1;
     bool                    InitFromFirstWindowViewport :1;
     bool                    IsVisible               :1; // Set to false when the node is hidden (usually disabled as it has no active window)
     bool                    IsFocused               :1;
-    bool                    IsDockSpace             :1; // Root node was created by a DockSpace() call.
     bool                    IsCentralNode           :1;
     bool                    IsHiddenTabBar          :1;
     bool                    HasCloseButton          :1;
@@ -855,6 +859,7 @@ struct ImGuiDockNode
     ImGuiDockNode(ImGuiID id);
     ~ImGuiDockNode();
     bool                    IsRootNode() const  { return ParentNode == NULL; }
+    bool                    IsDockSpace() const { return (Flags & ImGuiDockNodeFlags_Dockspace) != 0; }
     bool                    IsSplitNode() const { return ChildNodes[0] != NULL; }
     bool                    IsLeafNode() const  { return ChildNodes[0] == NULL; }
     bool                    IsEmpty() const     { return ChildNodes[0] == NULL && Windows.Size == 0; }
@@ -1280,6 +1285,7 @@ struct IMGUI_API ImGuiWindow
     bool                    Appearing;                          // Set during the frame where the window is appearing (or re-appearing)
     bool                    Hidden;                             // Do not display (== (HiddenFramesForResize > 0) ||
     bool                    HasCloseButton;                     // Set when the window has a close button (p_open != NULL)
+    signed char             ResizeBorderHeld;                   // Current border being held for resize (-1: none, otherwise 0-3)
     short                   BeginCount;                         // Number of Begin() during the current frame (generally 0 or 1, 1+ if appending via multiple Begin/End pairs)
     short                   BeginOrderWithinParent;             // Order within immediate parent window, if we are a child window. Otherwise 0.
     short                   BeginOrderWithinContext;            // Order within entire imgui context. This is mostly used for debugging submission order related issues.
@@ -1384,9 +1390,8 @@ struct ImGuiItemHoveredDataBackup
 enum ImGuiTabBarFlagsPrivate_
 {
     ImGuiTabBarFlags_DockNode                   = 1 << 20,  // Part of a dock node
-    ImGuiTabBarFlags_DockNodeIsDockSpace        = 1 << 21,  // Part of an explicit dockspace node node
-    ImGuiTabBarFlags_IsFocused                  = 1 << 22,
-    ImGuiTabBarFlags_SaveSettings               = 1 << 23   // FIXME: Settings are handled by the docking system, this only request the tab bar to mark settings dirty when reordering tabs
+    ImGuiTabBarFlags_IsFocused                  = 1 << 21,
+    ImGuiTabBarFlags_SaveSettings               = 1 << 22   // FIXME: Settings are handled by the docking system, this only request the tab bar to mark settings dirty when reordering tabs
 };
 
 enum ImGuiTabItemFlagsPrivate_
