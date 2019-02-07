@@ -75,6 +75,7 @@ Index of this file:
 #endif
 #define IM_ARRAYSIZE(_ARR)          ((int)(sizeof(_ARR)/sizeof(*_ARR)))         // Size of a static C-style array. Don't use on pointers!
 #define IM_OFFSETOF(_TYPE,_MEMBER)  ((size_t)&(((_TYPE*)0)->_MEMBER))           // Offset of _MEMBER within _TYPE. Standardized as offsetof() in modern C++.
+#define IM_UNUSED(_VAR)             ((void)_VAR)                                // Used to silence "unused variable warnings". Often useful as asserts may be stripped out from final builds.
 
 // Warnings
 #if defined(__clang__)
@@ -631,6 +632,7 @@ namespace ImGui
     IMGUI_API bool          IsItemClicked(int mouse_button = 0);                                // is the last item clicked? (e.g. button/node just clicked on) == IsMouseClicked(mouse_button) && IsItemHovered()
     IMGUI_API bool          IsItemVisible();                                                    // is the last item visible? (items may be out of sight because of clipping/scrolling)
     IMGUI_API bool          IsItemEdited();                                                     // did the last item modify its underlying value this frame? or was pressed? This is generally the same as the "bool" return value of many widgets.
+    IMGUI_API bool          IsItemActivated();                                                  // was the last item just made active (item was previously inactive).
     IMGUI_API bool          IsItemDeactivated();                                                // was the last item just made inactive (item was previously active). Useful for Undo/Redo patterns with widgets that requires continuous editing.
     IMGUI_API bool          IsItemDeactivatedAfterEdit();                                       // was the last item just made inactive and made a value change when it was active? (e.g. Slider/Drag moved). Useful for Undo/Redo patterns with widgets that requires continuous editing. Note that you may get false positives (some widgets such as Combo()/ListBox()/Selectable() will return true even when clicking an already selected item).
     IMGUI_API bool          IsAnyItemHovered();
@@ -848,8 +850,8 @@ enum ImGuiTabBarFlags_
     ImGuiTabBarFlags_None                           = 0,
     ImGuiTabBarFlags_Reorderable                    = 1 << 0,   // Allow manually dragging tabs to re-order them + New tabs are appended at the end of list
     ImGuiTabBarFlags_AutoSelectNewTabs              = 1 << 1,   // Automatically select new tabs when they appear
-    ImGuiTabBarFlags_NoCloseWithMiddleMouseButton   = 1 << 2,   // Disable behavior of closing tabs (that are submitted with p_open != NULL) with middle mouse button. You can still repro this behavior on user's side with if (IsItemHovered() && IsMouseClicked(2)) *p_open = false.
-    ImGuiTabBarFlags_NoTabListPopupButton           = 1 << 3,
+    ImGuiTabBarFlags_TabListPopupButton             = 1 << 2,
+    ImGuiTabBarFlags_NoCloseWithMiddleMouseButton   = 1 << 3,   // Disable behavior of closing tabs (that are submitted with p_open != NULL) with middle mouse button. You can still repro this behavior on user's side with if (IsItemHovered() && IsMouseClicked(2)) *p_open = false.
     ImGuiTabBarFlags_NoTabListScrollingButtons      = 1 << 4,
     ImGuiTabBarFlags_NoTooltip                      = 1 << 5,   // Disable tooltips when hovering a tab
     ImGuiTabBarFlags_FittingPolicyResizeDown        = 1 << 6,   // Resize tabs when they don't fit
@@ -878,7 +880,8 @@ enum ImGuiDockNodeFlags_
     ImGuiDockNodeFlags_NoDockingInCentralNode       = 1 << 3,   // Disable docking inside the Central Node, which will be always kept empty.
     //ImGuiDockNodeFlags_NoLayoutChanges            = 1 << 4,   // Disable adding/removing nodes interactively. Useful with programatically setup dockspaces.
     ImGuiDockNodeFlags_NoResize                     = 1 << 5,   // Disable resizing child nodes using the splitter/separators. Useful with programatically setup dockspaces. 
-    ImGuiDockNodeFlags_PassthruDockspace            = 1 << 6    // 1) DockSpace() will render a ImGuiCol_WindowBg background covering everything excepted the Central Node when empty. Meaning the host window should probably use SetNextWindowBgAlpha(0.0f) prior to Begin() when using this. 2) When Central Node is empty: let inputs pass-through + won't display a DockingEmptyBg background.
+    ImGuiDockNodeFlags_PassthruDockspace            = 1 << 6,   // Enable passthru dockspace: 1) DockSpace() will render a ImGuiCol_WindowBg background covering everything excepted the Central Node when empty. Meaning the host window should probably use SetNextWindowBgAlpha(0.0f) prior to Begin() when using this. 2) When Central Node is empty: let inputs pass-through + won't display a DockingEmptyBg background.
+    ImGuiDockNodeFlags_AutoHideTabBar               = 1 << 7    // Tab bar will automatically hide when there is a single window in the dock node.
 };
 
 // Flags for ImGui::IsWindowFocused()
@@ -1350,7 +1353,7 @@ struct ImGuiIO
 
     ImGuiConfigFlags   ConfigFlags;             // = 0              // See ImGuiConfigFlags_ enum. Set by user/application. Gamepad/keyboard navigation options, etc.
     ImGuiBackendFlags  BackendFlags;            // = 0              // See ImGuiBackendFlags_ enum. Set by back-end (imgui_impl_xxx files or custom back-end) to communicate features supported by the back-end.
-    ImVec2      DisplaySize;                    // <unset>          // Main display size, in pixels. Used e.g. to clamp windows positions. This is for the default viewport. Use BeginViewport() for other viewports.
+    ImVec2      DisplaySize;                    // <unset>          // Main display size, in pixels. This is for the default viewport. Use BeginViewport() for other viewports.
     float       DeltaTime;                      // = 1.0f/60.0f     // Time elapsed since last frame, in seconds.
     float       IniSavingRate;                  // = 5.0f           // Minimum time between saving positions/sizes to .ini file, in seconds.
     const char* IniFilename;                    // = "imgui.ini"    // Path to .ini file. Set NULL to disable automatic .ini loading/saving, if e.g. you want to manually load/save from memory.
@@ -1373,7 +1376,7 @@ struct ImGuiIO
     bool        ConfigDockingNoSplit;           // = false          // Simplified docking mode: disable window splitting, so docking is limited to merging multiple windows together into tab-bars.
     bool        ConfigDockingWithShift;         // = false          // Enable docking with holding Shift key (reduce visual noise, allows dropping in wider space)
     bool        ConfigDockingTabBarOnSingleWindows; // = false      // [BETA] Make every single floating window display within a docking node.
-    bool        ConfigDockingTransparentPayload;// = false          // [BETA] Make window or viewport transparent when docking and only display docking boxes on the target viewport. Useful if rendering of multiple viewport can be synced. Best used with ImGuiConfigFlags_ViewportsNoMerge.
+    bool        ConfigDockingTransparentPayload;// = false          // [BETA] Make window or viewport transparent when docking and only display docking boxes on the target viewport. Useful if rendering of multiple viewport cannot be synced. Best used with ConfigViewportsNoAutoMerge.
     
     // Viewport options (when ImGuiConfigFlags_ViewportsEnable is set)
     bool        ConfigViewportsNoAutoMerge;     // = false;         // Set to make all floating imgui windows always create their own viewport. Otherwise, they are merged into the main host viewports when overlapping it.
@@ -1583,7 +1586,7 @@ namespace ImGui
     // OBSOLETED in 1.60 (between Dec 2017 and Apr 2018)
     static inline bool  IsAnyWindowFocused()                  { return IsWindowFocused(ImGuiFocusedFlags_AnyWindow); }
     static inline bool  IsAnyWindowHovered()                  { return IsWindowHovered(ImGuiHoveredFlags_AnyWindow); }
-    static inline ImVec2 CalcItemRectClosestPoint(const ImVec2& pos, bool on_edge = false, float outward = 0.f) { (void)on_edge; (void)outward; IM_ASSERT(0); return pos; }
+    static inline ImVec2 CalcItemRectClosestPoint(const ImVec2& pos, bool on_edge = false, float outward = 0.f) { IM_UNUSED(on_edge); IM_UNUSED(outward); IM_ASSERT(0); return pos; }
     // OBSOLETED in 1.53 (between Oct 2017 and Dec 2017)
     static inline void  ShowTestWindow()                      { return ShowDemoWindow(); }
     static inline bool  IsRootWindowFocused()                 { return IsWindowFocused(ImGuiFocusedFlags_RootWindow); }
@@ -1672,7 +1675,7 @@ struct ImGuiTextBuffer
     inline char         operator[](int i)       { IM_ASSERT(Buf.Data != NULL); return Buf.Data[i]; }
     const char*         begin() const           { return Buf.Data ? &Buf.front() : EmptyString; }
     const char*         end() const             { return Buf.Data ? &Buf.back() : EmptyString; }   // Buf is zero-terminated, so end() will point on the zero-terminator
-    int                 size() const            { return Buf.Data ? Buf.Size - 1 : 0; }
+    int                 size() const            { return Buf.Size ? Buf.Size - 1 : 0; }
     bool                empty()                 { return Buf.Size <= 1; }
     void                clear()                 { Buf.clear(); }
     void                reserve(int capacity)   { Buf.reserve(capacity); }
@@ -2034,7 +2037,7 @@ struct ImFontGlyphRangesBuilder
 {
     ImVector<int> UsedChars;            // Store 1-bit per Unicode code point (0=unused, 1=used)
 
-    ImFontGlyphRangesBuilder()          { UsedChars.resize(0x10000 / 32); memset(UsedChars.Data, 0, 0x10000 / 32); }
+    ImFontGlyphRangesBuilder()          { UsedChars.resize(0x10000 / sizeof(int)); memset(UsedChars.Data, 0, 0x10000 / sizeof(int)); }
     bool           GetBit(int n) const  { int off = (n >> 5); int mask = 1 << (n & 31); return (UsedChars[off] & mask) != 0; } // Get bit n in the array
     void           SetBit(int n)        { int off = (n >> 5); int mask = 1 << (n & 31); UsedChars[off] |= mask; }              // Set bit n in the array
     void           AddChar(ImWchar c)   { SetBit(c); }                          // Add character
@@ -2168,7 +2171,7 @@ struct ImFont
 {
     // Members: Hot ~62/78 bytes
     float                       FontSize;           // <user set>   // Height of characters, set during loading (don't change after loading)
-    float                       Scale;              // = 1.f        // Base font scale, multiplied by the per-window font scale which you can adjust with SetFontScale()
+    float                       Scale;              // = 1.f        // Base font scale, multiplied by the per-window font scale which you can adjust with SetWindowFontScale()
     ImVec2                      DisplayOffset;      // = (0.f,0.f)  // Offset font rendering by xx pixels
     ImVector<ImFontGlyph>       Glyphs;             //              // All glyphs.
     ImVector<float>             IndexAdvanceX;      //              // Sparse. Glyphs->AdvanceX in a directly indexable way (more cache-friendly, for CalcTextSize functions which are often bottleneck in large UI).
@@ -2297,9 +2300,10 @@ enum ImGuiViewportFlags_
     ImGuiViewportFlags_NoDecoration             = 1 << 0,   // Platform Window: Disable platform decorations: title bar, borders, etc. (generally set all windows, but if ImGuiConfigFlags_ViewportsDecoration is set we only set this on popups/tooltips)
     ImGuiViewportFlags_NoTaskBarIcon            = 1 << 1,   // Platform Window: Disable platform task bar icon (generally set on popups/tooltips, or all windows if ImGuiConfigFlags_ViewportsNoTaskBarIcon is set)
     ImGuiViewportFlags_NoFocusOnAppearing       = 1 << 2,   // Platform Window: Don't take focus when created.
-    ImGuiViewportFlags_NoInputs                 = 1 << 3,   // Platform Window: Make mouse pass through so we can drag this window while peaking behind it.
-    ImGuiViewportFlags_NoRendererClear          = 1 << 4,   // Platform Window: Renderer doesn't need to clear the framebuffer ahead (because we will fill it entirely).
-    ImGuiViewportFlags_TopMost                  = 1 << 5    // Platform Window: Display on top (for tooltips only)
+    ImGuiViewportFlags_NoFocusOnClick           = 1 << 3,   // Platform Window: Don't take focus when clicked on.
+    ImGuiViewportFlags_NoInputs                 = 1 << 4,   // Platform Window: Make mouse pass through so we can drag this window while peaking behind it.
+    ImGuiViewportFlags_NoRendererClear          = 1 << 5,   // Platform Window: Renderer doesn't need to clear the framebuffer ahead (because we will fill it entirely).
+    ImGuiViewportFlags_TopMost                  = 1 << 6    // Platform Window: Display on top (for tooltips only)
 };
 
 // The viewports created and managed by imgui. The role of the platform back-end is to create the platform/OS windows corresponding to each viewport.
