@@ -3,8 +3,6 @@
 
 // Implemented features:
 //  [X] Renderer: User texture binding. Use 'MTLTexture' as ImTextureID. Read the FAQ about ImTextureID in imgui.cpp.
-// Missing features:
-//  [ ] Renderer: Multi-viewport / platform windows.
 
 // You can copy and use unmodified imgui_impl_* files in your project. See main.cpp for an example of using this.
 // If you are new to dear imgui, read examples/README.txt and read the documentation at the top of imgui.cpp.
@@ -12,7 +10,6 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
-//  2019-02-11: Metal: Projecting clipping rectangles correctly using draw_data->FramebufferScale to allow multi-viewports for retina display.
 //  2018-11-30: Misc: Setting up io.BackendRendererName so it can be displayed in the About Window.
 //  2018-07-05: Metal: Added new Metal backend implementation.
 
@@ -404,10 +401,12 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
         commandEncoder:(id<MTLRenderCommandEncoder>)commandEncoder
 {
     // Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
-    int fb_width = (int)(drawData->DisplaySize.x * drawData->FramebufferScale.x);
-    int fb_height = (int)(drawData->DisplaySize.y * drawData->FramebufferScale.y);
+    ImGuiIO &io = ImGui::GetIO();
+    int fb_width = (int)(drawData->DisplaySize.x * io.DisplayFramebufferScale.x);
+    int fb_height = (int)(drawData->DisplaySize.y * io.DisplayFramebufferScale.y);
     if (fb_width <= 0 || fb_height <= 0 || drawData->CmdListsCount == 0)
         return;
+    drawData->ScaleClipRects(io.DisplayFramebufferScale);
 
     [commandEncoder setCullMode:MTLCullModeNone];
     [commandEncoder setDepthStencilState:g_sharedMetalContext.depthStencilState];
@@ -441,23 +440,26 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
 
     [commandEncoder setVertexBytes:&ortho_projection length:sizeof(ortho_projection) atIndex:1];
 
-    size_t vertexBufferLength = drawData->TotalVtxCount * sizeof(ImDrawVert);
-    size_t indexBufferLength = drawData->TotalIdxCount * sizeof(ImDrawIdx);
-    MetalBuffer* vertexBuffer = [self dequeueReusableBufferOfLength:vertexBufferLength device:commandBuffer.device];
-    MetalBuffer* indexBuffer = [self dequeueReusableBufferOfLength:indexBufferLength device:commandBuffer.device];
+    size_t vertexBufferLength = 0;
+    size_t indexBufferLength = 0;
+    for (int n = 0; n < drawData->CmdListsCount; n++)
+    {
+        const ImDrawList* cmd_list = drawData->CmdLists[n];
+        vertexBufferLength += cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
+        indexBufferLength += cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx);
+    }
+
+    MetalBuffer *vertexBuffer = [self dequeueReusableBufferOfLength:vertexBufferLength device:commandBuffer.device];
+    MetalBuffer *indexBuffer = [self dequeueReusableBufferOfLength:indexBufferLength device:commandBuffer.device];
 
     id<MTLRenderPipelineState> renderPipelineState = [self renderPipelineStateForFrameAndDevice:commandBuffer.device];
     [commandEncoder setRenderPipelineState:renderPipelineState];
 
     [commandEncoder setVertexBuffer:vertexBuffer.buffer offset:0 atIndex:0];
 
-    // Will project scissor/clipping rectangles into framebuffer space
-    ImVec2 clip_off = drawData->DisplayPos;         // (0,0) unless using multi-viewports
-    ImVec2 clip_scale = drawData->FramebufferScale; // (1,1) unless using retina display which are often (2,2)
-
-    // Render command lists
     size_t vertexBufferOffset = 0;
     size_t indexBufferOffset = 0;
+    ImVec2 pos = drawData->DisplayPos;
     for (int n = 0; n < drawData->CmdListsCount; n++)
     {
         const ImDrawList* cmd_list = drawData->CmdLists[n];
@@ -478,23 +480,14 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
             }
             else
             {
-                // Project scissor/clipping rectangles into framebuffer space
-                ImVec4 clip_rect;
-                clip_rect.x = (pcmd->ClipRect.x - clip_off.x) * clip_scale.x;
-                clip_rect.y = (pcmd->ClipRect.y - clip_off.y) * clip_scale.y;
-                clip_rect.z = (pcmd->ClipRect.z - clip_off.x) * clip_scale.x;
-                clip_rect.w = (pcmd->ClipRect.w - clip_off.y) * clip_scale.y;
-
+                ImVec4 clip_rect = ImVec4(pcmd->ClipRect.x - pos.x, pcmd->ClipRect.y - pos.y, pcmd->ClipRect.z - pos.x, pcmd->ClipRect.w - pos.y);
                 if (clip_rect.x < fb_width && clip_rect.y < fb_height && clip_rect.z >= 0.0f && clip_rect.w >= 0.0f)
                 {
                     // Apply scissor/clipping rectangle
-                    MTLScissorRect scissorRect =
-                    {
-                        .x = NSUInteger(clip_rect.x),
+                    MTLScissorRect scissorRect = { .x = NSUInteger(clip_rect.x),
                         .y = NSUInteger(clip_rect.y),
                         .width = NSUInteger(clip_rect.z - clip_rect.x),
-                        .height = NSUInteger(clip_rect.w - clip_rect.y)
-                    };
+                        .height = NSUInteger(clip_rect.w - clip_rect.y) };
                     [commandEncoder setScissorRect:scissorRect];
 
 

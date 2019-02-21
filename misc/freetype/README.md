@@ -67,7 +67,6 @@ struct FreeTypeTest
     FontBuildMode BuildMode;
     bool          WantRebuild;
     float         FontsMultiply;
-    int           FontsPadding;
     unsigned int  FontsFlags;
 
     FreeTypeTest()
@@ -75,7 +74,6 @@ struct FreeTypeTest
         BuildMode = FontBuildMode_FreeType;
         WantRebuild = true;
         FontsMultiply = 1.0f;
-        FontsPadding = 1;
         FontsFlags = 0;
     }
 
@@ -87,10 +85,8 @@ struct FreeTypeTest
         ImGuiIO& io = ImGui::GetIO();
         for (int n = 0; n < io.Fonts->Fonts.Size; n++)
         {
-            ImFontConfig* font_config = (ImFontConfig*)io.Fonts->Fonts[n]->ConfigData;
-            io.Fonts->TexGlyphPadding = FontsPadding;
-            font_config->RasterizerMultiply = FontsMultiply;
-            font_config->RasterizerFlags = (BuildMode == FontBuildMode_FreeType) ? FontsFlags : 0x00;
+            io.Fonts->Fonts[n]->ConfigData->RasterizerMultiply = FontsMultiply;
+            io.Fonts->Fonts[n]->ConfigData->RasterizerFlags = (BuildMode == FontBuildMode_FreeType) ? FontsFlags : 0x00;
         }
         if (BuildMode == FontBuildMode_FreeType)
             ImGuiFreeType::BuildFontAtlas(io.Fonts, FontsFlags);
@@ -109,7 +105,6 @@ struct FreeTypeTest
         ImGui::SameLine();
         WantRebuild |= ImGui::RadioButton("Stb (Default)", (int*)&BuildMode, FontBuildMode_Stb);
         WantRebuild |= ImGui::DragFloat("Multiply", &FontsMultiply, 0.001f, 0.0f, 2.0f);
-        WantRebuild |= ImGui::DragInt("Padding", &FontsPadding, 0.1f, 0, 16);
         if (BuildMode == FontBuildMode_FreeType)
         {
             WantRebuild |= ImGui::CheckboxFlags("NoHinting",     &FontsFlags, ImGuiFreeType::NoHinting);
