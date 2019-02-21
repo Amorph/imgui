@@ -143,7 +143,7 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     g_pd3dDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 
     // Setup orthographic projection matrix
-    // Our visible imgui space lies from draw_data->DisplayPos (top left) to draw_data->DisplayPos+data_data->DisplaySize (bottom right).
+    // Our visible imgui space lies from draw_data->DisplayPos (top left) to draw_data->DisplayPos+data_data->DisplaySize (bottom right). DisplayMin is (0,0) for single viewport apps.
     // Being agnostic of whether <d3dx9.h> or <DirectXMath.h> can be used, we aren't relying on D3DXMatrixIdentity()/D3DXMatrixOrthoOffCenterLH() or DirectX::XMMatrixIdentity()/DirectX::XMMatrixOrthographicOffCenterLH()
     {
         float L = draw_data->DisplayPos.x + 0.5f;
@@ -166,7 +166,7 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     // Render command lists
     int vtx_offset = 0;
     int idx_offset = 0;
-    ImVec2 pos = draw_data->DisplayPos;
+    ImVec2 clip_off = draw_data->DisplayPos;
     for (int n = 0; n < draw_data->CmdListsCount; n++)
     {
         const ImDrawList* cmd_list = draw_data->CmdLists[n];
@@ -179,7 +179,7 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
             }
             else
             {
-                const RECT r = { (LONG)(pcmd->ClipRect.x - pos.x), (LONG)(pcmd->ClipRect.y - pos.y), (LONG)(pcmd->ClipRect.z - pos.x), (LONG)(pcmd->ClipRect.w - pos.y) };
+                const RECT r = { (LONG)(pcmd->ClipRect.x - clip_off.x), (LONG)(pcmd->ClipRect.y - clip_off.y), (LONG)(pcmd->ClipRect.z - clip_off.x), (LONG)(pcmd->ClipRect.w - clip_off.y) };
                 const LPDIRECT3DTEXTURE9 texture = (LPDIRECT3DTEXTURE9)pcmd->TextureId;
                 g_pd3dDevice->SetTexture(0, texture);
                 g_pd3dDevice->SetScissorRect(&r);
