@@ -1,4 +1,4 @@
-// dear imgui, v1.68 WIP
+// dear imgui, v1.68
 // (main code and documentation)
 
 // Call and read ImGui::ShowDemoWindow() in imgui_demo.cpp for demo code.
@@ -375,6 +375,7 @@ CODE
  - 2018/XX/XX (1.XX) - Moved IME support functions from io.ImeSetInputScreenPosFn, io.ImeWindowHandle to the PlatformIO api.
  
 
+ - 2019/02/14 (1.68) - made it illegal/assert when io.DisplayTime == 0.0f (with an exception for the first frame). If for some reason your time step calculation gives you a zero value, replace it with a dummy small value!
  - 2019/02/01 (1.68) - removed io.DisplayVisibleMin/DisplayVisibleMax (which were marked obsolete and removed from viewport/docking branch already).
  - 2019/01/06 (1.67) - renamed io.InputCharacters[], marked internal as was always intended. Please don't access directly, and use AddInputCharacter() instead!
  - 2019/01/06 (1.67) - renamed ImFontAtlas::GlyphRangesBuilder to ImFontGlyphRangesBuilder. Keep redirection typedef (will obsolete).
@@ -816,9 +817,9 @@ CODE
 
       // Options
       ImFontConfig config;
-      config.OversampleH = 3;
+      config.OversampleH = 2;
       config.OversampleV = 1;
-      config.GlyphOffset.y -= 2.0f;      // Move everything by 2 pixels up
+      config.GlyphOffset.y -= 1.0f;      // Move everything by 1 pixels up
       config.GlyphExtraSpacing.x = 1.0f; // Increase spacing between characters
       io.Fonts->AddFontFromFileTTF("myfontfile.ttf", size_pixels, &config);
 
@@ -1128,6 +1129,7 @@ ImGuiStyle::ImGuiStyle()
     TabRounding             = 4.0f;             // Radius of upper corners of a tab. Set to 0.0f to have rectangular tabs.
     TabBorderSize           = 0.0f;             // Thickness of border around tabs.
     ButtonTextAlign         = ImVec2(0.5f,0.5f);// Alignment of button text when button is larger than text.
+    SelectableTextAlign     = ImVec2(0.0f,0.0f);// Alignment of selectable text when button is larger than text.
     DisplayWindowPadding    = ImVec2(19,19);    // Window position are clamped to be visible within the display area or monitors by at least this amount. Only applies to regular windows.
     DisplaySafeAreaPadding  = ImVec2(3,3);      // If you cannot see the edge of your screen (e.g. on a TV) increase the safe area padding. Covers popups/tooltips as well regular windows.
     MouseCursorScale        = 1.0f;             // Scale software rendered mouse cursor (when io.MouseDrawCursor is enabled). May be removed later.
@@ -3488,12 +3490,12 @@ void ImGui::NewFrame()
     // Check user data
     // (We pass an error message in the assert expression to make it visible to programmers who are not using a debugger, as most assert handlers display their argument)
     IM_ASSERT(g.Initialized);
-    IM_ASSERT(g.IO.DeltaTime >= 0.0f                                    && "Need a positive DeltaTime (zero is tolerated but will cause some timing issues)");
-    IM_ASSERT(g.IO.DisplaySize.x >= 0.0f && g.IO.DisplaySize.y >= 0.0f  && "Invalid DisplaySize value");
+    IM_ASSERT((g.IO.DeltaTime > 0.0f || g.FrameCount == 0)              && "Need a positive DeltaTime!");
+    IM_ASSERT(g.IO.DisplaySize.x >= 0.0f && g.IO.DisplaySize.y >= 0.0f  && "Invalid DisplaySize value!");
     IM_ASSERT(g.IO.Fonts->Fonts.Size > 0                                && "Font Atlas not built. Did you call io.Fonts->GetTexDataAsRGBA32() / GetTexDataAsAlpha8() ?");
     IM_ASSERT(g.IO.Fonts->Fonts[0]->IsLoaded()                          && "Font Atlas not built. Did you call io.Fonts->GetTexDataAsRGBA32() / GetTexDataAsAlpha8() ?");
-    IM_ASSERT(g.Style.CurveTessellationTol > 0.0f                       && "Invalid style setting");
-    IM_ASSERT(g.Style.Alpha >= 0.0f && g.Style.Alpha <= 1.0f            && "Invalid style setting. Alpha cannot be negative (allows us to avoid a few clamps in color computations)");
+    IM_ASSERT(g.Style.CurveTessellationTol > 0.0f                       && "Invalid style setting!");
+    IM_ASSERT(g.Style.Alpha >= 0.0f && g.Style.Alpha <= 1.0f            && "Invalid style setting. Alpha cannot be negative (allows us to avoid a few clamps in color computations)!");
     IM_ASSERT((g.FrameCount == 0 || g.FrameCountEnded == g.FrameCount)  && "Forgot to call Render() or EndFrame() at the end of the previous frame?");
     for (int n = 0; n < ImGuiKey_COUNT; n++)
         IM_ASSERT(g.IO.KeyMap[n] >= -1 && g.IO.KeyMap[n] < IM_ARRAYSIZE(g.IO.KeysDown) && "io.KeyMap[] contains an out of bound value (need to be 0..512, or -1 for unmapped key)");
@@ -3934,6 +3936,7 @@ static void SetupViewportDrawData(ImGuiViewportP* viewport, ImVector<ImDrawList*
     draw_data->TotalVtxCount = draw_data->TotalIdxCount = 0;
     draw_data->DisplayPos = viewport->Pos;
     draw_data->DisplaySize = viewport->Size;
+    draw_data->FramebufferScale = ImGui::GetIO().DisplayFramebufferScale; // FIXME-VIEWPORT: This may vary on a per-monitor/viewport basis?
     for (int n = 0; n < draw_lists->Size; n++)
     {
         draw_data->TotalVtxCount += draw_lists->Data[n]->VtxBuffer.Size;
@@ -4184,11 +4187,7 @@ ImVec2 ImGui::CalcTextSize(const char* text, const char* text_end, bool hide_tex
         return ImVec2(0.0f, font_size);
     ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, wrap_width, text, text_display_end, NULL);
 
-    // Cancel out character spacing for the last character of a line (it is baked into glyph->AdvanceX field)
-    const float font_scale = font_size / font->FontSize;
-    const float character_spacing_x = 1.0f * font_scale;
-    if (text_size.x > 0.0f)
-        text_size.x -= character_spacing_x;
+    // Round
     text_size.x = (float)(int)(text_size.x + 0.95f);
 
     return text_size;
@@ -4882,7 +4881,8 @@ static ImVec2 CalcSizeAfterConstraint(ImGuiWindow* window, ImVec2 new_size)
 static ImVec2 CalcSizeContents(ImGuiWindow* window)
 {
     if (window->Collapsed)
-        return window->SizeContents;
+        if (window->AutoFitFramesX <= 0 && window->AutoFitFramesY <= 0)
+            return window->SizeContents;
     if (window->Hidden && window->HiddenFramesForResize == 0 && window->HiddenFramesRegular > 0)
         return window->SizeContents;
 
@@ -6333,28 +6333,29 @@ struct ImGuiStyleVarInfo
 
 static const ImGuiStyleVarInfo GStyleVarInfo[] =
 {
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, Alpha) },              // ImGuiStyleVar_Alpha
-    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowPadding) },      // ImGuiStyleVar_WindowPadding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowRounding) },     // ImGuiStyleVar_WindowRounding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowBorderSize) },   // ImGuiStyleVar_WindowBorderSize
-    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowMinSize) },      // ImGuiStyleVar_WindowMinSize
-    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowTitleAlign) },   // ImGuiStyleVar_WindowTitleAlign
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ChildRounding) },      // ImGuiStyleVar_ChildRounding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ChildBorderSize) },    // ImGuiStyleVar_ChildBorderSize
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, PopupRounding) },      // ImGuiStyleVar_PopupRounding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, PopupBorderSize) },    // ImGuiStyleVar_PopupBorderSize
-    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, FramePadding) },       // ImGuiStyleVar_FramePadding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, FrameRounding) },      // ImGuiStyleVar_FrameRounding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, FrameBorderSize) },    // ImGuiStyleVar_FrameBorderSize
-    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ItemSpacing) },        // ImGuiStyleVar_ItemSpacing
-    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ItemInnerSpacing) },   // ImGuiStyleVar_ItemInnerSpacing
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, IndentSpacing) },      // ImGuiStyleVar_IndentSpacing
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ScrollbarSize) },      // ImGuiStyleVar_ScrollbarSize
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ScrollbarRounding) },  // ImGuiStyleVar_ScrollbarRounding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, GrabMinSize) },        // ImGuiStyleVar_GrabMinSize
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, GrabRounding) },       // ImGuiStyleVar_GrabRounding
-    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, TabRounding) },        // ImGuiStyleVar_TabRounding
-    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ButtonTextAlign) },    // ImGuiStyleVar_ButtonTextAlign
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, Alpha) },               // ImGuiStyleVar_Alpha
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowPadding) },       // ImGuiStyleVar_WindowPadding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowRounding) },      // ImGuiStyleVar_WindowRounding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowBorderSize) },    // ImGuiStyleVar_WindowBorderSize
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowMinSize) },       // ImGuiStyleVar_WindowMinSize
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, WindowTitleAlign) },    // ImGuiStyleVar_WindowTitleAlign
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ChildRounding) },       // ImGuiStyleVar_ChildRounding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ChildBorderSize) },     // ImGuiStyleVar_ChildBorderSize
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, PopupRounding) },       // ImGuiStyleVar_PopupRounding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, PopupBorderSize) },     // ImGuiStyleVar_PopupBorderSize
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, FramePadding) },        // ImGuiStyleVar_FramePadding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, FrameRounding) },       // ImGuiStyleVar_FrameRounding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, FrameBorderSize) },     // ImGuiStyleVar_FrameBorderSize
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ItemSpacing) },         // ImGuiStyleVar_ItemSpacing
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ItemInnerSpacing) },    // ImGuiStyleVar_ItemInnerSpacing
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, IndentSpacing) },       // ImGuiStyleVar_IndentSpacing
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ScrollbarSize) },       // ImGuiStyleVar_ScrollbarSize
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ScrollbarRounding) },   // ImGuiStyleVar_ScrollbarRounding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, GrabMinSize) },         // ImGuiStyleVar_GrabMinSize
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, GrabRounding) },        // ImGuiStyleVar_GrabRounding
+    { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, TabRounding) },         // ImGuiStyleVar_TabRounding
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ButtonTextAlign) },     // ImGuiStyleVar_ButtonTextAlign
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, SelectableTextAlign) }, // ImGuiStyleVar_SelectableTextAlign
 };
 
 static const ImGuiStyleVarInfo* GetStyleVarInfo(ImGuiStyleVar idx)
@@ -10623,8 +10624,9 @@ void ImGui::DockContextProcessDock(ImGuiContext* ctx, ImGuiDockRequest* req)
     }
 
     // FIXME-DOCK: When we are trying to dock an existing single-window node into a loose window, transfer Node ID as well
+    // When processing an interactive split, usually LastFrameAlive will be < g.FrameCount. But DockBuilder operations can make it ==.
     if (target_node)
-        IM_ASSERT(target_node->LastFrameAlive < g.FrameCount);
+        IM_ASSERT(target_node->LastFrameAlive <= g.FrameCount);
     if (target_node && target_window && target_node == target_window->DockNodeAsHost)
         IM_ASSERT(target_node->Windows.Size > 0 || target_node->IsSplitNode() || target_node->IsCentralNode);
 
@@ -11957,6 +11959,7 @@ static void ImGui::DockNodePreviewDockRender(ImGuiWindow* host_window, ImGuiDock
 
 void ImGui::DockNodeTreeSplit(ImGuiContext* ctx, ImGuiDockNode* parent_node, ImGuiAxis split_axis, int split_inheritor_child_idx, float split_ratio, ImGuiDockNode* new_node)
 {
+    ImGuiContext& g = *GImGui;
     IM_ASSERT(split_axis != ImGuiAxis_None);
 
     ImGuiDockNode* child_0 = (new_node && split_inheritor_child_idx != 0) ? new_node : DockContextAddNode(ctx, 0);
@@ -11974,7 +11977,8 @@ void ImGui::DockNodeTreeSplit(ImGuiContext* ctx, ImGuiDockNode* parent_node, ImG
     parent_node->VisibleWindow = NULL;
 
     float size_avail = (parent_node->Size[split_axis] - IMGUI_DOCK_SPLITTER_SIZE);
-    IM_ASSERT(size_avail > 0.0f);
+    size_avail = ImMax(size_avail, g.Style.WindowMinSize[split_axis] * 2.0f);
+    IM_ASSERT(size_avail > 0.0f); // If you created a node manually with DockBuilderAddNode(), you need to also call DockBuilderSetNodeSize() before splitting.
     child_0->SizeRef = child_1->SizeRef = parent_node->Size;
     child_0->SizeRef[split_axis] = ImFloor(size_avail * split_ratio);
     child_1->SizeRef[split_axis] = ImFloor(size_avail - child_0->SizeRef[split_axis]);
@@ -12475,7 +12479,6 @@ ImGuiID ImGui::DockBuilderAddNode(ImGuiID id, ImGuiDockNodeFlags flags)
     {
         DockSpace(id, ImVec2(0, 0), flags | ImGuiDockNodeFlags_KeepAliveOnly);
         node = DockContextFindNodeByID(ctx, id);
-        node->LastFrameAlive = -1;
     }
     else
     {
@@ -12483,8 +12486,8 @@ ImGuiID ImGui::DockBuilderAddNode(ImGuiID id, ImGuiDockNodeFlags flags)
             node = DockContextFindNodeByID(ctx, id);
         if (!node)
             node = DockContextAddNode(ctx, id);
-        node->LastFrameAlive = ctx->FrameCount;
     }
+    node->LastFrameAlive = ctx->FrameCount;   // Set this otherwise BeginDocked will undock during the same frame.
     return node->ID;
 }
 
@@ -13787,7 +13790,7 @@ void ImGui::ShowMetricsWindow(bool* p_open)
             if (draw_list == ImGui::GetWindowDrawList())
             {
                 ImGui::SameLine();
-                ImGui::TextColored(ImColor(255,100,100), "CURRENTLY APPENDING"); // Can't display stats for active draw list! (we don't have the data double-buffered)
+                ImGui::TextColored(ImVec4(1.0f,0.4f,0.4f,1.0f), "CURRENTLY APPENDING"); // Can't display stats for active draw list! (we don't have the data double-buffered)
                 if (node_open) ImGui::TreePop();
                 return;
             }
