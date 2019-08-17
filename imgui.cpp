@@ -1,4 +1,4 @@
-// dear imgui, v1.72
+// dear imgui, v1.72b
 // (main code and documentation)
 
 // Call and read ImGui::ShowDemoWindow() in imgui_demo.cpp for demo code.
@@ -72,6 +72,7 @@ CODE
 // [SECTION] ImGuiListClipper
 // [SECTION] RENDER HELPERS
 // [SECTION] MAIN CODE (most of the code! lots of stuff, needs tidying up!)
+// [SECTION] SCROLLING
 // [SECTION] TOOLTIPS
 // [SECTION] POPUPS
 // [SECTION] KEYBOARD/GAMEPAD NAVIGATION
@@ -3234,13 +3235,15 @@ void ImGui::MemFree(void* ptr)
 
 const char* ImGui::GetClipboardText()
 {
-    return GImGui->IO.GetClipboardTextFn ? GImGui->IO.GetClipboardTextFn(GImGui->IO.ClipboardUserData) : "";
+    ImGuiContext& g = *GImGui;
+    return g.IO.GetClipboardTextFn ? g.IO.GetClipboardTextFn(g.IO.ClipboardUserData) : "";
 }
 
 void ImGui::SetClipboardText(const char* text)
 {
-    if (GImGui->IO.SetClipboardTextFn)
-        GImGui->IO.SetClipboardTextFn(GImGui->IO.ClipboardUserData, text);
+    ImGuiContext& g = *GImGui;
+    if (g.IO.SetClipboardTextFn)
+        g.IO.SetClipboardTextFn(g.IO.ClipboardUserData, text);
 }
 
 const char* ImGui::GetVersion()
@@ -3469,7 +3472,7 @@ void ImGui::UpdateMouseMovingWindowNewFrame()
         {
             // Try to merge the window back into the main viewport. 
             // This works because MouseViewport should be != MovingWindow->Viewport on release (as per code in UpdateViewports)
-            if (g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable)
+            if (g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable)
                 UpdateTryMergeWindowIntoHostViewport(moving_window, g.MouseViewport);
 
             // Restore the mouse viewport so that we don't hover the viewport _under_ the moved window during the frame we released the mouse button.
@@ -3818,10 +3821,10 @@ void ImGui::NewFrame()
     NewFrameSanityChecks();
 
     // Perform simple check: error if Docking or Viewport are enabled _exactly_ on frame 1 (instead of frame 0 or later), which is a common error leading to loss of .ini data.
-    const ImGuiColumnsFlags prev_config_flags = g.ConfigFlagsForFrame;
-    if (g.FrameCount == 1 && (g.IO.ConfigFlags & ImGuiConfigFlags_DockingEnable) && (prev_config_flags & ImGuiConfigFlags_DockingEnable) == 0)
+    g.ConfigFlagsLastFrame = g.ConfigFlagsCurrFrame;
+    if (g.FrameCount == 1 && (g.IO.ConfigFlags & ImGuiConfigFlags_DockingEnable) && (g.ConfigFlagsLastFrame & ImGuiConfigFlags_DockingEnable) == 0)
         IM_ASSERT(0 && "Please DockingEnable before the first call to NewFrame()! Otherwise you will lose your .ini settings!");
-    if (g.FrameCount == 1 && (g.IO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) && (prev_config_flags & ImGuiConfigFlags_ViewportsEnable) == 0)
+    if (g.FrameCount == 1 && (g.IO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) && (g.ConfigFlagsLastFrame & ImGuiConfigFlags_ViewportsEnable) == 0)
         IM_ASSERT(0 && "Please ViewportEnable before the first call to NewFrame()! Otherwise you will lose your .ini settings!");
 
     // Perform simple checks: multi-viewport and platform windows support
@@ -3860,6 +3863,7 @@ void ImGui::NewFrame()
             IM_ASSERT(mon.DpiScale != 0.0f);
         }
     }
+    g.ConfigFlagsCurrFrame = g.IO.ConfigFlags;
 
     // Load settings on first frame (if not explicitly loaded manually before)
     if (!g.SettingsLoaded)
@@ -3889,7 +3893,6 @@ void ImGui::NewFrame()
     g.FrameCount += 1;
     g.TooltipOverrideCount = 0;
     g.WindowsActiveCount = 0;
-    g.ConfigFlagsForFrame = g.IO.ConfigFlags;
 
     UpdateViewportsNewFrame();
 
@@ -4677,15 +4680,18 @@ bool ImGui::IsMouseHoveringRect(const ImVec2& r_min, const ImVec2& r_max, bool c
 int ImGui::GetKeyIndex(ImGuiKey imgui_key)
 {
     IM_ASSERT(imgui_key >= 0 && imgui_key < ImGuiKey_COUNT);
-    return GImGui->IO.KeyMap[imgui_key];
+    ImGuiContext& g = *GImGui;
+    return g.IO.KeyMap[imgui_key];
 }
 
 // Note that imgui doesn't know the semantic of each entry of io.KeysDown[]. Use your own indices/enums according to how your back-end/engine stored them into io.KeysDown[]!
 bool ImGui::IsKeyDown(int user_key_index)
 {
-    if (user_key_index < 0) return false;
-    IM_ASSERT(user_key_index >= 0 && user_key_index < IM_ARRAYSIZE(GImGui->IO.KeysDown));
-    return GImGui->IO.KeysDown[user_key_index];
+    if (user_key_index < 0) 
+        return false;
+    ImGuiContext& g = *GImGui;
+    IM_ASSERT(user_key_index >= 0 && user_key_index < IM_ARRAYSIZE(g.IO.KeysDown));
+    return g.IO.KeysDown[user_key_index];
 }
 
 int ImGui::CalcTypematicPressedRepeatAmount(float t, float t_prev, float repeat_delay, float repeat_rate)
@@ -5313,40 +5319,6 @@ ImVec2 ImGui::CalcWindowExpectedSize(ImGuiWindow* window)
 {
     ImVec2 size_contents = CalcContentSize(window);
     return CalcSizeAfterConstraint(window, CalcSizeAutoFit(window, size_contents));
-}
-
-static ImVec2 CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window, bool snap_on_edges)
-{
-    ImGuiContext& g = *GImGui;
-    ImVec2 scroll = window->Scroll;
-    if (window->ScrollTarget.x < FLT_MAX)
-    {
-        float cr_x = window->ScrollTargetCenterRatio.x;
-        float target_x = window->ScrollTarget.x;
-        if (snap_on_edges && cr_x <= 0.0f && target_x <= window->WindowPadding.x)
-            target_x = 0.0f;
-        else if (snap_on_edges && cr_x >= 1.0f && target_x >= window->ContentSize.x + window->WindowPadding.x + GImGui->Style.ItemSpacing.x)
-            target_x = window->ContentSize.x + window->WindowPadding.x * 2.0f;
-        scroll.x = target_x - cr_x * window->InnerRect.GetWidth();
-    }
-    if (window->ScrollTarget.y < FLT_MAX)
-    {
-        // 'snap_on_edges' allows for a discontinuity at the edge of scrolling limits to take account of WindowPadding so that scrolling to make the last item visible scroll far enough to see the padding.
-        float cr_y = window->ScrollTargetCenterRatio.y;
-        float target_y = window->ScrollTarget.y;
-        if (snap_on_edges && cr_y <= 0.0f && target_y <= window->WindowPadding.y)
-            target_y = 0.0f;
-        if (snap_on_edges && cr_y >= 1.0f && target_y >= window->ContentSize.y + window->WindowPadding.y + g.Style.ItemSpacing.y)
-            target_y = window->ContentSize.y + window->WindowPadding.y * 2.0f;
-        scroll.y = target_y - cr_y * window->InnerRect.GetHeight();
-    }
-    scroll = ImMax(scroll, ImVec2(0.0f, 0.0f));
-    if (!window->Collapsed && !window->SkipItems)
-    {
-        scroll.x = ImMin(scroll.x, window->ScrollMax.x);
-        scroll.y = ImMin(scroll.y, window->ScrollMax.y);
-    }
-    return scroll;
 }
 
 static ImGuiCol GetWindowBgColorIdxFromFlags(ImGuiWindowFlags flags)
@@ -6159,7 +6131,7 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
             // won't steal the OS focus away from their parent window (which may be reflected in OS the title bar decoration).
             // Setting _NoFocusOnClick would technically prevent us from bringing back to front in case they are being covered by an OS window from a different app, 
             // but it shouldn't be much of a problem considering those are already popups that are closed when clicking elsewhere.
-            if (is_short_lived_floating_window)
+            if (is_short_lived_floating_window && (flags & ImGuiWindowFlags_Modal) == 0)
                 viewport_flags |= ImGuiViewportFlags_NoFocusOnAppearing | ImGuiViewportFlags_NoFocusOnClick;
 
             // We can overwrite viewport flags using ImGuiWindowClass (advanced users)
@@ -6285,7 +6257,7 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
         // Inner rectangle
         // Not affected by window border size. Used by: 
         // - InnerClipRect
-        // - NavScrollToBringItemIntoView()
+        // - ScrollToBringRectIntoView()
         // - NavUpdatePageUpPageDown()
         // - Scrollbar()
         window->InnerRect.Min.x = window->Pos.x;
@@ -6781,7 +6753,7 @@ void ImGui::PushMultiItemsWidths(int components, float w_full)
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
-    const ImGuiStyle& style = GImGui->Style;
+    const ImGuiStyle& style = g.Style;
     const float w_item_one  = ImMax(1.0f, (float)(int)((w_full - (style.ItemInnerSpacing.x) * (components-1)) / (float)components));
     const float w_item_last = ImMax(1.0f, (float)(int)(w_full - (w_item_one + style.ItemInnerSpacing.x) * (components-1)));
     window->DC.ItemWidthStack.push_back(w_item_last);
@@ -7626,93 +7598,6 @@ void ImGui::SetCursorScreenPos(const ImVec2& pos)
     window->DC.CursorMaxPos = ImMax(window->DC.CursorMaxPos, window->DC.CursorPos);
 }
 
-float ImGui::GetScrollX()
-{
-    ImGuiWindow* window = GImGui->CurrentWindow;
-    return window->Scroll.x;
-}
-
-float ImGui::GetScrollY()
-{
-    ImGuiWindow* window = GImGui->CurrentWindow;
-    return window->Scroll.y;
-}
-
-float ImGui::GetScrollMaxX()
-{
-    ImGuiWindow* window = GImGui->CurrentWindow;
-    return window->ScrollMax.x;
-}
-
-float ImGui::GetScrollMaxY()
-{
-    ImGuiWindow* window = GImGui->CurrentWindow;
-    return window->ScrollMax.y;
-}
-
-void ImGui::SetScrollX(float scroll_x)
-{
-    ImGuiWindow* window = GetCurrentWindow();
-    window->ScrollTarget.x = scroll_x;
-    window->ScrollTargetCenterRatio.x = 0.0f;
-}
-
-void ImGui::SetScrollY(float scroll_y)
-{
-    ImGuiWindow* window = GetCurrentWindow();
-    window->ScrollTarget.y = scroll_y;
-    window->ScrollTargetCenterRatio.y = 0.0f;
-}
-
-void ImGui::SetScrollX(ImGuiWindow* window, float new_scroll_x)
-{
-    window->ScrollTarget.x = new_scroll_x;
-    window->ScrollTargetCenterRatio.x = 0.0f;
-}
-
-void ImGui::SetScrollY(ImGuiWindow* window, float new_scroll_y)
-{
-    window->ScrollTarget.y = new_scroll_y;
-    window->ScrollTargetCenterRatio.y = 0.0f;
-}
-
-void ImGui::SetScrollFromPosX(float local_x, float center_x_ratio)
-{
-    // We store a target position so centering can occur on the next frame when we are guaranteed to have a known window size
-    ImGuiWindow* window = GetCurrentWindow();
-    IM_ASSERT(center_x_ratio >= 0.0f && center_x_ratio <= 1.0f);
-    window->ScrollTarget.x = (float)(int)(local_x + window->Scroll.x);
-    window->ScrollTargetCenterRatio.x = center_x_ratio;
-}
-
-void ImGui::SetScrollFromPosY(float local_y, float center_y_ratio)
-{
-    // We store a target position so centering can occur on the next frame when we are guaranteed to have a known window size
-    ImGuiWindow* window = GetCurrentWindow();
-    IM_ASSERT(center_y_ratio >= 0.0f && center_y_ratio <= 1.0f);
-    window->ScrollTarget.y = (float)(int)(local_y + window->Scroll.y);
-    window->ScrollTargetCenterRatio.y = center_y_ratio;
-}
-
-// center_x_ratio: 0.0f left of last item, 0.5f horizontal center of last item, 1.0f right of last item.
-void ImGui::SetScrollHereX(float center_x_ratio)
-{
-    ImGuiWindow* window = GetCurrentWindow();
-    float target_x = window->DC.LastItemRect.Min.x - window->Pos.x; // Left of last item, in window space
-    float last_item_width = window->DC.LastItemRect.GetWidth();
-    target_x += (last_item_width * center_x_ratio) + (GImGui->Style.ItemSpacing.x * (center_x_ratio - 0.5f) * 2.0f); // Precisely aim before, in the middle or after the last item.
-    SetScrollFromPosX(target_x, center_x_ratio);
-}
-
-// center_y_ratio: 0.0f top of last item, 0.5f vertical center of last item, 1.0f bottom of last item.
-void ImGui::SetScrollHereY(float center_y_ratio)
-{
-    ImGuiWindow* window = GetCurrentWindow();
-    float target_y = window->DC.CursorPosPrevLine.y - window->Pos.y; // Top of last item, in window space
-    target_y += (window->DC.PrevLineSize.y * center_y_ratio) + (GImGui->Style.ItemSpacing.y * (center_y_ratio - 0.5f) * 2.0f); // Precisely aim above, in the middle or below the last line.
-    SetScrollFromPosY(target_y, center_y_ratio);
-}
-
 void ImGui::ActivateItem(ImGuiID id)
 {
     ImGuiContext& g = *GImGui;
@@ -7947,6 +7832,167 @@ void ImGui::Unindent(float indent_w)
     ImGuiWindow* window = GetCurrentWindow();
     window->DC.Indent.x -= (indent_w != 0.0f) ? indent_w : g.Style.IndentSpacing;
     window->DC.CursorPos.x = window->Pos.x + window->DC.Indent.x + window->DC.ColumnsOffset.x;
+}
+
+
+//-----------------------------------------------------------------------------
+// [SECTION] SCROLLING
+//-----------------------------------------------------------------------------
+
+static ImVec2 CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window, bool snap_on_edges)
+{
+    ImGuiContext& g = *GImGui;
+    ImVec2 scroll = window->Scroll;
+    if (window->ScrollTarget.x < FLT_MAX)
+    {
+        float cr_x = window->ScrollTargetCenterRatio.x;
+        float target_x = window->ScrollTarget.x;
+        if (snap_on_edges && cr_x <= 0.0f && target_x <= window->WindowPadding.x)
+            target_x = 0.0f;
+        else if (snap_on_edges && cr_x >= 1.0f && target_x >= window->ContentSize.x + window->WindowPadding.x + g.Style.ItemSpacing.x)
+            target_x = window->ContentSize.x + window->WindowPadding.x * 2.0f;
+        scroll.x = target_x - cr_x * (window->SizeFull.x - window->ScrollbarSizes.x);
+    }
+    if (window->ScrollTarget.y < FLT_MAX)
+    {
+        // 'snap_on_edges' allows for a discontinuity at the edge of scrolling limits to take account of WindowPadding so that scrolling to make the last item visible scroll far enough to see the padding.
+        float decoration_up_height = window->TitleBarHeight() + window->MenuBarHeight();
+        float cr_y = window->ScrollTargetCenterRatio.y;
+        float target_y = window->ScrollTarget.y;
+        if (snap_on_edges && cr_y <= 0.0f && target_y <= window->WindowPadding.y)
+            target_y = 0.0f;
+        if (snap_on_edges && cr_y >= 1.0f && target_y >= window->ContentSize.y + window->WindowPadding.y + g.Style.ItemSpacing.y)
+            target_y = window->ContentSize.y + window->WindowPadding.y * 2.0f;
+        scroll.y = target_y - cr_y * (window->SizeFull.y - window->ScrollbarSizes.y - decoration_up_height);
+    }
+    scroll = ImMax(scroll, ImVec2(0.0f, 0.0f));
+    if (!window->Collapsed && !window->SkipItems)
+    {
+        scroll.x = ImMin(scroll.x, window->ScrollMax.x);
+        scroll.y = ImMin(scroll.y, window->ScrollMax.y);
+    }
+    return scroll;
+}
+
+// Scroll to keep newly navigated item fully into view
+void ImGui::ScrollToBringRectIntoView(ImGuiWindow* window, const ImRect& item_rect)
+{
+    ImRect window_rect(window->InnerRect.Min - ImVec2(1, 1), window->InnerRect.Max + ImVec2(1, 1));
+    //GetForegroundDrawList(window)->AddRect(window_rect.Min, window_rect.Max, IM_COL32_WHITE); // [DEBUG]
+    if (window_rect.Contains(item_rect))
+        return;
+
+    ImGuiContext& g = *GImGui;
+    if (window->ScrollbarX && item_rect.Min.x < window_rect.Min.x)
+        SetScrollFromPosX(window, item_rect.Min.x - window->Pos.x + g.Style.ItemSpacing.x, 0.0f);
+    else if (window->ScrollbarX && item_rect.Max.x >= window_rect.Max.x)
+        SetScrollFromPosX(window, item_rect.Max.x - window->Pos.x + g.Style.ItemSpacing.x, 1.0f);
+    if (item_rect.Min.y < window_rect.Min.y)
+        SetScrollFromPosY(window, item_rect.Min.y - window->Pos.y - g.Style.ItemSpacing.y, 0.0f);
+    else if (item_rect.Max.y >= window_rect.Max.y)
+        SetScrollFromPosY(window, item_rect.Max.y - window->Pos.y + g.Style.ItemSpacing.y, 1.0f);
+}
+
+float ImGui::GetScrollX()
+{
+    ImGuiWindow* window = GImGui->CurrentWindow;
+    return window->Scroll.x;
+}
+
+float ImGui::GetScrollY()
+{
+    ImGuiWindow* window = GImGui->CurrentWindow;
+    return window->Scroll.y;
+}
+
+float ImGui::GetScrollMaxX()
+{
+    ImGuiWindow* window = GImGui->CurrentWindow;
+    return window->ScrollMax.x;
+}
+
+float ImGui::GetScrollMaxY()
+{
+    ImGuiWindow* window = GImGui->CurrentWindow;
+    return window->ScrollMax.y;
+}
+
+void ImGui::SetScrollX(float scroll_x)
+{
+    ImGuiWindow* window = GetCurrentWindow();
+    window->ScrollTarget.x = scroll_x;
+    window->ScrollTargetCenterRatio.x = 0.0f;
+}
+
+void ImGui::SetScrollY(float scroll_y)
+{
+    ImGuiWindow* window = GetCurrentWindow();
+    window->ScrollTarget.y = scroll_y;
+    window->ScrollTargetCenterRatio.y = 0.0f;
+}
+
+void ImGui::SetScrollX(ImGuiWindow* window, float new_scroll_x)
+{
+    window->ScrollTarget.x = new_scroll_x;
+    window->ScrollTargetCenterRatio.x = 0.0f;
+}
+
+void ImGui::SetScrollY(ImGuiWindow* window, float new_scroll_y)
+{
+    window->ScrollTarget.y = new_scroll_y;
+    window->ScrollTargetCenterRatio.y = 0.0f;
+}
+
+
+void ImGui::SetScrollFromPosX(ImGuiWindow* window, float local_x, float center_x_ratio)
+{
+    // We store a target position so centering can occur on the next frame when we are guaranteed to have a known window size
+    IM_ASSERT(center_x_ratio >= 0.0f && center_x_ratio <= 1.0f);
+    window->ScrollTarget.x = (float)(int)(local_x + window->Scroll.x);
+    window->ScrollTargetCenterRatio.x = center_x_ratio;
+}
+
+void ImGui::SetScrollFromPosY(ImGuiWindow* window, float local_y, float center_y_ratio)
+{
+    // We store a target position so centering can occur on the next frame when we are guaranteed to have a known window size
+    IM_ASSERT(center_y_ratio >= 0.0f && center_y_ratio <= 1.0f);
+    const float decoration_up_height = window->TitleBarHeight() + window->MenuBarHeight();
+    local_y -= decoration_up_height;
+    window->ScrollTarget.y = (float)(int)(local_y + window->Scroll.y);
+    window->ScrollTargetCenterRatio.y = center_y_ratio;
+}
+
+void ImGui::SetScrollFromPosX(float local_x, float center_x_ratio)
+{
+    ImGuiContext& g = *GImGui;
+    SetScrollFromPosX(g.CurrentWindow, local_x, center_x_ratio);
+}
+
+void ImGui::SetScrollFromPosY(float local_y, float center_y_ratio)
+{
+    ImGuiContext& g = *GImGui;
+    SetScrollFromPosY(g.CurrentWindow, local_y, center_y_ratio);
+}
+
+// center_x_ratio: 0.0f left of last item, 0.5f horizontal center of last item, 1.0f right of last item.
+void ImGui::SetScrollHereX(float center_x_ratio)
+{
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* window = g.CurrentWindow;
+    float target_x = window->DC.LastItemRect.Min.x - window->Pos.x; // Left of last item, in window space
+    float last_item_width = window->DC.LastItemRect.GetWidth();
+    target_x += (last_item_width * center_x_ratio) + (g.Style.ItemSpacing.x * (center_x_ratio - 0.5f) * 2.0f); // Precisely aim before, in the middle or after the last item.
+    SetScrollFromPosX(target_x, center_x_ratio);
+}
+
+// center_y_ratio: 0.0f top of last item, 0.5f vertical center of last item, 1.0f bottom of last item.
+void ImGui::SetScrollHereY(float center_y_ratio)
+{
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* window = g.CurrentWindow;
+    float target_y = window->DC.CursorPosPrevLine.y - window->Pos.y; // Top of last item, in window space
+    target_y += (window->DC.PrevLineSize.y * center_y_ratio) + (g.Style.ItemSpacing.y * (center_y_ratio - 0.5f) * 2.0f); // Precisely aim above, in the middle or below the last line.
+    SetScrollFromPosY(target_y, center_y_ratio);
 }
 
 //-----------------------------------------------------------------------------
@@ -8486,7 +8532,7 @@ static bool NavScoreItem(ImGuiNavMoveResult* result, ImRect cand)
     if (window->ParentWindow == g.NavWindow)
     {
         IM_ASSERT((window->Flags | g.NavWindow->Flags) & ImGuiWindowFlags_NavFlattened);
-        if (!window->ClipRect.Contains(cand))
+        if (!window->ClipRect.Overlaps(cand))
             return false;
         cand.ClipWithFull(window->ClipRect); // This allows the scored item to not overlap other candidates in the parent window
     }
@@ -8859,38 +8905,6 @@ ImVec2 ImGui::GetNavInputAmount2d(ImGuiNavDirSourceFlags dir_sources, ImGuiInput
     return delta;
 }
 
-// Scroll to keep newly navigated item fully into view
-// NB: We modify rect_rel by the amount we scrolled for, so it is immediately updated.
-static void NavScrollToBringItemIntoView(ImGuiWindow* window, const ImRect& item_rect)
-{
-    ImRect window_rect(window->InnerRect.Min - ImVec2(1, 1), window->InnerRect.Max + ImVec2(1, 1));
-    //GetForegroundDrawList(window)->AddRect(window_rect.Min, window_rect.Max, IM_COL32_WHITE); // [DEBUG]
-    if (window_rect.Contains(item_rect))
-        return;
-
-    ImGuiContext& g = *GImGui;
-    if (window->ScrollbarX && item_rect.Min.x < window_rect.Min.x)
-    {
-        window->ScrollTarget.x = item_rect.Min.x - window->Pos.x + window->Scroll.x - g.Style.ItemSpacing.x;
-        window->ScrollTargetCenterRatio.x = 0.0f;
-    }
-    else if (window->ScrollbarX && item_rect.Max.x >= window_rect.Max.x)
-    {
-        window->ScrollTarget.x = item_rect.Max.x - window->Pos.x + window->Scroll.x + g.Style.ItemSpacing.x;
-        window->ScrollTargetCenterRatio.x = 1.0f;
-    }
-    if (item_rect.Min.y < window_rect.Min.y)
-    {
-        window->ScrollTarget.y = item_rect.Min.y - window->Pos.y + window->Scroll.y - g.Style.ItemSpacing.y;
-        window->ScrollTargetCenterRatio.y = 0.0f;
-    }
-    else if (item_rect.Max.y >= window_rect.Max.y)
-    {
-        window->ScrollTarget.y = item_rect.Max.y - window->Pos.y + window->Scroll.y + g.Style.ItemSpacing.y;
-        window->ScrollTargetCenterRatio.y = 1.0f;
-    }
-}
-
 static void ImGui::NavUpdate()
 {
     ImGuiContext& g = *GImGui;
@@ -9200,7 +9214,7 @@ static void ImGui::NavUpdateMoveResult()
     if (g.NavLayer == 0)
     {
         ImRect rect_abs = ImRect(result->RectRel.Min + result->Window->Pos, result->RectRel.Max + result->Window->Pos);
-        NavScrollToBringItemIntoView(result->Window, rect_abs);
+        ScrollToBringRectIntoView(result->Window, rect_abs);
 
         // Estimate upcoming scroll so we can offset our result position so mouse position can be applied immediately after in NavUpdate()
         ImVec2 next_scroll = CalcNextScrollFromScrollTargetAndClamp(result->Window, false);
@@ -9209,7 +9223,7 @@ static void ImGui::NavUpdateMoveResult()
 
         // Also scroll parent window to keep us into view if necessary (we could/should technically recurse back the whole the parent hierarchy).
         if (result->Window->Flags & ImGuiWindowFlags_ChildWindow)
-            NavScrollToBringItemIntoView(result->Window->ParentWindow, ImRect(rect_abs.Min + delta_scroll, rect_abs.Max + delta_scroll));
+            ScrollToBringRectIntoView(result->Window->ParentWindow, ImRect(rect_abs.Min + delta_scroll, rect_abs.Max + delta_scroll));
     }
 
     ClearActiveID();
@@ -10248,6 +10262,29 @@ static void SettingsHandlerWindow_WriteAll(ImGuiContext* ctx, ImGuiSettingsHandl
 //-----------------------------------------------------------------------------
 // [SECTION] VIEWPORTS, PLATFORM WINDOWS
 //-----------------------------------------------------------------------------
+// - GetMainViewport()
+// - FindViewportByID()
+// - FindViewportByPlatformHandle()
+// - SetCurrentViewport() [Internal]
+// - SetWindowViewport() [Internal]
+// - GetWindowAlwaysWantOwnViewport() [Internal]
+// - UpdateTryMergeWindowIntoHostViewport() [Internal]
+// - UpdateTryMergeWindowIntoHostViewports() [Internal]
+// - TranslateWindowsInViewport() [Internal]
+// - ScaleWindowsInViewport() [Internal]
+// - FindHoveredViewportFromPlatformWindowStack() [Internal]
+// - UpdateViewportsNewFrame() [Internal]
+// - UpdateViewportsEndFrame() [Internal]
+// - AddUpdateViewport() [Internal]
+// - UpdateSelectWindowViewport() [Internal]
+// - UpdatePlatformWindows()
+// - RenderPlatformWindowsDefault()
+// - FindPlatformMonitorForPos() [Internal]
+// - FindPlatformMonitorForRect() [Internal]
+// - UpdateViewportPlatformMonitor() [Internal]
+// - DestroyPlatformWindow() [Internal]
+// - DestroyPlatformWindows()
+//-----------------------------------------------------------------------------
 
 ImGuiViewport* ImGui::GetMainViewport()
 {
@@ -10303,7 +10340,7 @@ static bool ImGui::GetWindowAlwaysWantOwnViewport(ImGuiWindow* window)
     // Tooltips and menus are not automatically forced into their own viewport when the NoMerge flag is set, however the multiplication of viewports makes them more likely to protrude and create their own.
     ImGuiContext& g = *GImGui;
     if (g.IO.ConfigViewportsNoAutoMerge || (window->WindowClass.ViewportFlagsOverrideSet & ImGuiViewportFlags_NoAutoMerge))
-        if (g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable)
+        if (g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable)
             if (!window->DockIsActive)
                 if ((window->Flags & (ImGuiWindowFlags_ChildWindow | ImGuiWindowFlags_ChildMenu | ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_Popup)) == 0)
                     return true;
@@ -10348,6 +10385,26 @@ static bool ImGui::UpdateTryMergeWindowIntoHostViewports(ImGuiWindow* window)
     return UpdateTryMergeWindowIntoHostViewport(window, g.Viewports[0]);
 }
 
+// Translate imgui windows when a Host Viewport has been moved
+// (This additionally keeps windows at the same place when ImGuiConfigFlags_ViewportsEnable is toggled!)
+void ImGui::TranslateWindowsInViewport(ImGuiViewportP* viewport, const ImVec2& old_pos, const ImVec2& new_pos)
+{
+    ImGuiContext& g = *GImGui;
+    IM_ASSERT(viewport->Window == NULL && (viewport->Flags & ImGuiViewportFlags_CanHostOtherWindows));
+
+    // 1) We test if ImGuiConfigFlags_ViewportsEnable was just toggled, which allows us to conveniently
+    // translate imgui windows from OS-window-local to absolute coordinates or vice-versa.
+    // 2) If it's not going to fit into the new size, keep it at same absolute position.
+    // One problem with this is that most Win32 applications doesn't update their render while dragging, 
+    // and so the window will appear to teleport when releasing the mouse.
+    const bool translate_all_windows = (g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable) != (g.ConfigFlagsLastFrame & ImGuiConfigFlags_ViewportsEnable);
+    ImRect test_still_fit_rect(old_pos, old_pos + viewport->Size);
+    ImVec2 delta_pos = new_pos - old_pos;
+    for (int window_n = 0; window_n < g.Windows.Size; window_n++) // FIXME-OPT
+        if (translate_all_windows || (g.Windows[window_n]->Viewport == viewport && test_still_fit_rect.Contains(g.Windows[window_n]->Rect())))
+            TranslateWindow(g.Windows[window_n], delta_pos);
+}
+
 // Scale all windows (position, size). Use when e.g. changing DPI. (This is a lossy operation!)
 void ImGui::ScaleWindowsInViewport(ImGuiViewportP* viewport, float scale)
 {
@@ -10367,7 +10424,7 @@ void ImGui::ScaleWindowsInViewport(ImGuiViewportP* viewport, float scale)
 // If the back-end doesn't set MouseLastHoveredViewport or doesn't honor ImGuiViewportFlags_NoInputs, we do a search ourselves.
 // A) It won't take account of the possibility that non-imgui windows may be in-between our dragged window and our target window. 
 // B) It requires Platform_GetWindowFocus to be implemented by back-end.
-static ImGuiViewportP* FindViewportHoveredFromPlatformWindowStack(const ImVec2 mouse_platform_pos)
+static ImGuiViewportP* FindHoveredViewportFromPlatformWindowStack(const ImVec2 mouse_platform_pos)
 {
     ImGuiContext& g = *GImGui;
     ImGuiViewportP* best_candidate = NULL;
@@ -10382,14 +10439,14 @@ static ImGuiViewportP* FindViewportHoveredFromPlatformWindowStack(const ImVec2 m
 }
 
 // Update viewports and monitor infos
-// Note that this is runing even if 'ImGuiConfigFlags_ViewportsEnable' is not set, in order to clear unused viewports (if any) and update monitor info.
+// Note that this is running even if 'ImGuiConfigFlags_ViewportsEnable' is not set, in order to clear unused viewports (if any) and update monitor info.
 static void ImGui::UpdateViewportsNewFrame()
 {
     ImGuiContext& g = *GImGui;
     IM_ASSERT(g.PlatformIO.Viewports.Size <= g.Viewports.Size);
 
     // Update Minimized status (we need it first in order to decide if we'll apply Pos/Size of the main viewport)
-    if ((g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable))
+    if ((g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable))
     {
         for (int n = 0; n < g.Viewports.Size; n++)
         {
@@ -10412,7 +10469,7 @@ static void ImGui::UpdateViewportsNewFrame()
     IM_ASSERT(main_viewport->Window == NULL);
     ImVec2 main_viewport_platform_pos = ImVec2(0.0f, 0.0f);
     ImVec2 main_viewport_platform_size = g.IO.DisplaySize;
-    if (g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable)
+    if (g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable)
         main_viewport_platform_pos = (main_viewport->Flags & ImGuiViewportFlags_Minimized) ? main_viewport->Pos : g.PlatformIO.Platform_GetWindowPos(main_viewport);
     AddUpdateViewport(NULL, IMGUI_VIEWPORT_DEFAULT_ID, main_viewport_platform_pos, main_viewport_platform_size, ImGuiViewportFlags_CanHostOtherWindows);
 
@@ -10447,7 +10504,7 @@ static void ImGui::UpdateViewportsNewFrame()
         }
 
         const bool platform_funcs_available = viewport->PlatformWindowCreated;
-        if ((g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable))
+        if ((g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable))
         {
             // Update Position and Size (from Platform Window to ImGui) if requested. 
             // We do it early in the frame instead of waiting for UpdatePlatformWindows() to avoid a frame of lag when moving/resizing using OS facilities.
@@ -10468,11 +10525,9 @@ static void ImGui::UpdateViewportsNewFrame()
 
         // Translate imgui windows when a Host Viewport has been moved
         // (This additionally keeps windows at the same place when ImGuiConfigFlags_ViewportsEnable is toggled!)
-        ImVec2 viewport_delta = viewport->Pos - viewport->LastPos;
-        if ((viewport->Flags & ImGuiViewportFlags_CanHostOtherWindows) && (viewport_delta.x != 0.0f || viewport_delta.y != 0.0f))
-            for (int window_n = 0; window_n < g.Windows.Size; window_n++)
-                if (g.Windows[window_n]->Viewport == viewport || (g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable) == 0)
-                    TranslateWindow(g.Windows[window_n], viewport_delta);
+        const ImVec2 viewport_delta_pos = viewport->Pos - viewport->LastPos;
+        if ((viewport->Flags & ImGuiViewportFlags_CanHostOtherWindows) && (viewport_delta_pos.x != 0.0f || viewport_delta_pos.y != 0.0f))
+            TranslateWindowsInViewport(viewport, viewport->LastPos, viewport->Pos);
 
         // Update DPI scale
         float new_dpi_scale;
@@ -10499,7 +10554,7 @@ static void ImGui::UpdateViewportsNewFrame()
         viewport->DpiScale = new_dpi_scale;
     }
 
-    if (!(g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable))
+    if (!(g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable))
     {
         g.MouseViewport = main_viewport;
         return;
@@ -10515,7 +10570,7 @@ static void ImGui::UpdateViewportsNewFrame()
         {
             // Back-end failed at honoring its contract if it returned a viewport with the _NoInputs flag.
             IM_ASSERT(0);
-            viewport_hovered = FindViewportHoveredFromPlatformWindowStack(g.IO.MousePos);
+            viewport_hovered = FindHoveredViewportFromPlatformWindowStack(g.IO.MousePos);
         }
     }
     else
@@ -10523,7 +10578,7 @@ static void ImGui::UpdateViewportsNewFrame()
         // If the back-end doesn't know how to honor ImGuiViewportFlags_NoInputs, we do a search ourselves. Note that this search:
         // A) won't take account of the possibility that non-imgui windows may be in-between our dragged window and our target window. 
         // B) uses LastFrameAsRefViewport as a flawed replacement for the last time a window was focused (we could/should fix that by introducing Focus functions in PlatformIO)
-        viewport_hovered = FindViewportHoveredFromPlatformWindowStack(g.IO.MousePos);
+        viewport_hovered = FindHoveredViewportFromPlatformWindowStack(g.IO.MousePos);
     }
     if (viewport_hovered != NULL)
         g.MouseLastHoveredViewport = viewport_hovered;
@@ -10643,7 +10698,7 @@ static void ImGui::UpdateSelectWindowViewport(ImGuiWindow* window)
 
     // Restore main viewport if multi-viewport is not supported by the back-end
     ImGuiViewportP* main_viewport = g.Viewports[0];
-    if (!(g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable))
+    if (!(g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable))
     {
         SetWindowViewport(window, main_viewport);
         return;
@@ -10769,7 +10824,7 @@ void ImGui::UpdatePlatformWindows()
     IM_ASSERT(g.FrameCountEnded == g.FrameCount && "Forgot to call Render() or EndFrame() before UpdatePlatformWindows()?");
     IM_ASSERT(g.FrameCountPlatformEnded < g.FrameCount);
     g.FrameCountPlatformEnded = g.FrameCount;
-    if (!(g.ConfigFlagsForFrame & ImGuiConfigFlags_ViewportsEnable))
+    if (!(g.ConfigFlagsCurrFrame & ImGuiConfigFlags_ViewportsEnable))
         return;
 
     // Create/resize/destroy platform windows to match each active viewport.
@@ -11011,14 +11066,20 @@ void ImGui::DestroyPlatformWindows()
 // Docking: ImGuiDockContext Docking/Undocking functions
 // Docking: ImGuiDockNode
 // Docking: ImGuiDockNode Tree manipulation functions
-// Docking: Public Functions (SetWindowDock, DockSpace)
+// Docking: Public Functions (SetWindowDock, DockSpace, DockSpaceOverViewport)
 // Docking: Builder Functions
-// Docking: Begin/End Functions (called from Begin/End)
+// Docking: Begin/End Support Functions (called from Begin/End)
 // Docking: Settings
 //-----------------------------------------------------------------------------
 
 //-----------------------------------------------------------------------------
 // Docking: Internal Types
+//-----------------------------------------------------------------------------
+// - ImGuiDockRequestType
+// - ImGuiDockRequest
+// - ImGuiDockPreviewData
+// - ImGuiDockNodeSettings
+// - ImGuiDockContext
 //-----------------------------------------------------------------------------
 
 static float IMGUI_DOCK_SPLITTER_SIZE = 2.0f;
@@ -11166,6 +11227,22 @@ namespace ImGui
 // we can also very easily recreate the nodes from scratch given the settings data (this is what DockContextRebuild() does).
 // This is convenient as docking reconfiguration can be implemented by mostly poking at the simpler settings data.
 //-----------------------------------------------------------------------------
+// - DockContextInitialize()
+// - DockContextShutdown()
+// - DockContextOnLoadSettings()
+// - DockContextClearNodes()
+// - DockContextRebuildNodes()
+// - DockContextUpdateUndocking()
+// - DockContextUpdateDocking()
+// - DockContextFindNodeByID()
+// - DockContextGenNodeID()
+// - DockContextAddNode()
+// - DockContextRemoveNode()
+// - ImGuiDockContextPruneNodeData
+// - DockContextPruneUnusedSettingsNodes()
+// - DockContextBuildNodesFromSettings()
+// - DockContextBuildAddWindowsToNodes()
+//-----------------------------------------------------------------------------
 
 void ImGui::DockContextInitialize(ImGuiContext* ctx)
 {
@@ -11210,7 +11287,7 @@ void ImGui::DockContextClearNodes(ImGuiContext* ctx, ImGuiID root_id, bool clear
 }
 
 // This function also acts as a defacto test to make sure we can rebuild from scratch without a glitch
-void ImGui::DockContextRebuild(ImGuiContext* ctx)
+void ImGui::DockContextRebuildNodes(ImGuiContext* ctx)
 {
     IMGUI_DEBUG_LOG_DOCKING("DockContextRebuild()\n");
     ImGuiDockContext* dc = ctx->DockContext;
@@ -11250,7 +11327,7 @@ void ImGui::DockContextUpdateUndocking(ImGuiContext* ctx)
 #endif
     if (dc->WantFullRebuild)
     {
-        DockContextRebuild(ctx);
+        DockContextRebuildNodes(ctx);
         dc->WantFullRebuild = false;
     }
 
@@ -11394,13 +11471,14 @@ static void ImGui::DockContextPruneUnusedSettingsNodes(ImGuiContext* ctx)
     }
 
     // Count reference to dock ids from window settings
+    // We guard against the possibility of an invalid .ini file (RootID may point to a missing node)
     for (int settings_n = 0; settings_n < g.SettingsWindows.Size; settings_n++)
         if (ImGuiID dock_id = g.SettingsWindows[settings_n].DockId)
             if (ImGuiDockContextPruneNodeData* data = pool.GetByKey(dock_id))
             {
-                ImGuiDockContextPruneNodeData* data_root = (data->RootID == dock_id) ? data : pool.GetByKey(data->RootID);
                 data->CountWindows++;
-                data_root->CountChildWindows++;
+                if (ImGuiDockContextPruneNodeData* data_root = (data->RootID == dock_id) ? data : pool.GetByKey(data->RootID))
+                    data_root->CountChildWindows++;
             }
 
     // Prune
@@ -11476,6 +11554,15 @@ void ImGui::DockContextBuildAddWindowsToNodes(ImGuiContext* ctx, ImGuiID root_id
 
 //-----------------------------------------------------------------------------
 // Docking: ImGuiDockContext Docking/Undocking functions
+//-----------------------------------------------------------------------------
+// - DockContextQueueDock()
+// - DockContextQueueUndockWindow()
+// - DockContextQueueUndockNode()
+// - DockContextQueueNotifyRemovedNode()
+// - DockContextProcessDock()
+// - DockContextProcessUndockWindow()
+// - DockContextProcessUndockNode()
+// - DockContextCalcDropPosForDocking()
 //-----------------------------------------------------------------------------
 
 void ImGui::DockContextQueueDock(ImGuiContext* ctx, ImGuiWindow* target, ImGuiDockNode* target_node, ImGuiWindow* payload, ImGuiDir split_dir, float split_ratio, bool split_outer)
@@ -11719,6 +11806,31 @@ bool ImGui::DockContextCalcDropPosForDocking(ImGuiWindow* target, ImGuiDockNode*
 
 //-----------------------------------------------------------------------------
 // Docking: ImGuiDockNode
+//-----------------------------------------------------------------------------
+// - DockNodeGetTabOrder()
+// - DockNodeAddWindow()
+// - DockNodeRemoveWindow()
+// - DockNodeMoveChildNodes()
+// - DockNodeMoveWindows()
+// - DockNodeApplyPosSizeToWindows()
+// - DockNodeHideHostWindow()
+// - ImGuiDockNodeFindInfoResults
+// - DockNodeFindInfo()
+// - DockNodeUpdateVisibleFlagAndInactiveChilds()
+// - DockNodeUpdateVisibleFlag()
+// - DockNodeStartMouseMovingWindow()
+// - DockNodeUpdate()
+// - DockNodeUpdateWindowMenu()
+// - DockNodeUpdateTabBar()
+// - DockNodeAddTabBar()
+// - DockNodeRemoveTabBar()
+// - DockNodeIsDropAllowedOne()
+// - DockNodeIsDropAllowed()
+// - DockNodeCalcTabBarLayout()
+// - DockNodeCalcSplitRects()
+// - DockNodeCalcDropRectsAndTestMousePos()
+// - DockNodePreviewDockCalc()
+// - DockNodePreviewDockRender()
 //-----------------------------------------------------------------------------
 
 ImGuiDockNode::ImGuiDockNode(ImGuiID id)
@@ -12984,6 +13096,14 @@ static void ImGui::DockNodePreviewDockRender(ImGuiWindow* host_window, ImGuiDock
 //-----------------------------------------------------------------------------
 // Docking: ImGuiDockNode Tree manipulation functions
 //-----------------------------------------------------------------------------
+// - DockNodeTreeSplit()
+// - DockNodeTreeMerge()
+// - DockNodeTreeUpdatePosSize()
+// - DockNodeTreeUpdateSplitterFindTouchingNode()
+// - DockNodeTreeUpdateSplitter()
+// - DockNodeTreeFindFallbackLeafNode()
+// - DockNodeTreeFindNodeByPos()
+//-----------------------------------------------------------------------------
 
 void ImGui::DockNodeTreeSplit(ImGuiContext* ctx, ImGuiDockNode* parent_node, ImGuiAxis split_axis, int split_inheritor_child_idx, float split_ratio, ImGuiDockNode* new_node)
 {
@@ -13319,6 +13439,10 @@ ImGuiDockNode* ImGui::DockNodeTreeFindNodeByPos(ImGuiDockNode* node, ImVec2 pos)
 //-----------------------------------------------------------------------------
 // Docking: Public Functions (SetWindowDock, DockSpace, DockSpaceOverViewport)
 //-----------------------------------------------------------------------------
+// - SetWindowDock() [Internal]
+// - DockSpace()
+// - DockSpaceOverViewport()
+//-----------------------------------------------------------------------------
 
 // [Internal] Called via SetNextWindowDockID()
 void ImGui::SetWindowDock(ImGuiWindow* window, ImGuiID dock_id, ImGuiCond cond)
@@ -13478,7 +13602,23 @@ ImGuiID ImGui::DockSpaceOverViewport(ImGuiViewport* viewport, ImGuiDockNodeFlags
 // Docking: Builder Functions
 //-----------------------------------------------------------------------------
 // Very early end-user API to manipulate dock nodes.
+// Only available in imgui_internal.h. Expect this API to change/break!
 // It is expected that those functions are all called _before_ the dockspace node submission.
+//-----------------------------------------------------------------------------
+// - DockBuilderDockWindow()
+// - DockBuilderGetNode()
+// - DockBuilderSetNodePos()
+// - DockBuilderSetNodeSize()
+// - DockBuilderAddNode()
+// - DockBuilderRemoveNode()
+// - DockBuilderRemoveNodeChildNodes()
+// - DockBuilderRemoveNodeDockedWindows()
+// - DockBuilderSplitNode()
+// - DockBuilderCopyNodeRec()
+// - DockBuilderCopyNode()
+// - DockBuilderCopyWindowSettings()
+// - DockBuilderCopyDockSpace()
+// - DockBuilderFinish()
 //-----------------------------------------------------------------------------
 
 void ImGui::DockBuilderDockWindow(const char* window_name, ImGuiID node_id)
@@ -13855,7 +13995,12 @@ void ImGui::DockBuilderFinish(ImGuiID root_id)
 }
 
 //-----------------------------------------------------------------------------
-// Docking: Begin/End Functions (called from Begin/End)
+// Docking: Begin/End Support Functions (called from Begin/End)
+//-----------------------------------------------------------------------------
+// - GetWindowAlwaysWantOwnTabBar()
+// - BeginDocked()
+// - BeginAsDockableDragDropSource()
+// - BeginAsDockableDragDropTarget()
 //-----------------------------------------------------------------------------
 
 bool ImGui::GetWindowAlwaysWantOwnTabBar(ImGuiWindow* window)
@@ -14105,6 +14250,14 @@ void ImGui::BeginAsDockableDragDropTarget(ImGuiWindow* window)
 
 //-----------------------------------------------------------------------------
 // Docking: Settings
+//-----------------------------------------------------------------------------
+// - DockSettingsRenameNodeReferences()
+// - DockSettingsRemoveNodeReferences()
+// - DockSettingsFindNodeSettings()
+// - DockSettingsHandler_ReadOpen()
+// - DockSettingsHandler_ReadLine()
+// - DockSettingsHandler_DockNodeToSettings()
+// - DockSettingsHandler_WriteAll()
 //-----------------------------------------------------------------------------
 
 static void ImGui::DockSettingsRenameNodeReferences(ImGuiID old_node_id, ImGuiID new_node_id)
